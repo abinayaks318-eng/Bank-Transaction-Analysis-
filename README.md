@@ -442,4 +442,4 @@ def detect_late_night_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
 def full_anomaly_report(df: pd.DataFrame, z_threshold: float = 2.5):
     """Generate a compiled report containing all flagged anomalies."""
-    pass
+    pass.
