@@ -90,263 +90,279 @@ Report Gen.    | report_generator.py | Builds formatted text reports; exports cl
 
          Extracted Code Modules
 
-Below is the complete code structured according to the project layout specified in the report.# ==============================================================================
-# 1. DATABASE MODELS (models.py) [cite: 91, 92]
-# ==============================================================================
-from app import db [cite: 92]
-from datetime import datetime [cite: 92]
-import uuid [cite: 92]
+Below is the complete code structured according to the project layout specified in the report.
 
-class Customer(db.Model): [cite: 92]
-    __tablename__ = 'customer' [cite: 92]
-    customer_id  = db.Column(db.Integer, primary_key=True) [cite: 92]
-    full_name    = db.Column(db.String(100), nullable=False) [cite: 92]
-    email        = db.Column(db.String(100), unique=True, nullable=False) [cite: 92]
-    phone        = db.Column(db.String(15), nullable=False) [cite: 92]
-    pan_number   = db.Column(db.String(10), unique=True, nullable=False) [cite: 92]
-    kyc_verified = db.Column(db.Boolean, default=False) [cite: 92]
-    accounts     = db.relationship('Account', backref='owner', lazy=True) [cite: 92]
+   Flask Application Factory (app/__init__.py)
 
-class Account(db.Model): [cite: 92]
-    __tablename__ = 'account' [cite: 92]
-    account_id     = db.Column(db.Integer, primary_key=True) [cite: 92]
-    account_number = db.Column(db.String(20), unique=True, nullable=False) [cite: 92]
-    account_type   = db.Column(db.Enum('SAVINGS','CURRENT','FIXED'), nullable=False) [cite: 92]
-    balance        = db.Column(db.Numeric(15,2), default=0.00) [cite: 92]
-    status         = db.Column(db.Enum('ACTIVE','INACTIVE','FROZEN'), default='ACTIVE') [cite: 92]
-    customer_id    = db.Column(db.Integer, db.ForeignKey('customer.customer_id')) [cite: 92]
-    transactions   = db.relationship('Transaction', backref='account', lazy=True) [cite: 92]
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager
+from flask_bcrypt import Bcrypt
+from config import Config
 
-class Transaction(db.Model): [cite: 92]
-    __tablename__ = 'transaction' [cite: 92]
-    transaction_id   = db.Column(db.Integer, primary_key=True) [cite: 92]
-    account_id       = db.Column(db.Integer, db.ForeignKey('account.account_id')) [cite: 92]
-    transaction_type = db.Column(db.Enum('CREDIT','DEBIT','TRANSFER'), nullable=False) [cite: 92]
-    amount           = db.Column(db.Numeric(15,2), nullable=False) [cite: 92]
-    balance_after    = db.Column(db.Numeric(15,2), nullable=False) [cite: 92]
-    channel          = db.Column(db.String(20)) [cite: 92]
-    status           = db.Column(db.Enum('SUCCESS','FAILED','PENDING'), default='PENDING') [cite: 92]
-    reference_no     = db.Column(db.String(30), unique=True, [cite: 92]
-                                 default=lambda: str(uuid.uuid4())[:20]) [cite: 92]
-    initiated_at     = db.Column(db.DateTime, default=datetime.utcnow) [cite: 92]
+db  = SQLAlchemy()
+jwt = JWTManager()
+bcrypt = Bcrypt()
 
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_class)
 
-# ==============================================================================
-# 2. FLASK APPLICATION FACTORY (app/__init__.py) [cite: 94, 95]
-# ==============================================================================
-from flask import Flask [cite: 95]
-from flask_sqlalchemy import SQLAlchemy [cite: 95]
-from flask_jwt_extended import JWTManager [cite: 95]
-from flask_bcrypt import Bcrypt [cite: 95]
-from config import Config [cite: 95]
+    db.init_app(app)
+    jwt.init_app(app)
+    bcrypt.init_app(app)
 
-db  = SQLAlchemy() [cite: 95]
-jwt = JWTManager() [cite: 95]
-bcrypt = Bcrypt() [cite: 95]
+    from app.routes.auth         import auth_bp
+    from app.routes.transactions import txn_bp
+    from app.routes.accounts     import acc_bp
+    from app.routes.reports      import rep_bp
 
-def create_app(config_class=Config): [cite: 95]
-    app = Flask(__name__) [cite: 95]
-    app.config.from_object(config_class) [cite: 95]
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(txn_bp,  url_prefix='/api/transactions')
+    app.register_blueprint(acc_bp,  url_prefix='/api/accounts')
+    app.register_blueprint(rep_bp,  url_prefix='/api/reports')
 
-    db.init_app(app) [cite: 95]
-    jwt.init_app(app) [cite: 95]
-    bcrypt.init_app(app) [cite: 95]
+    return app
 
-    from app.routes.auth         import auth_bp [cite: 95]
-    from app.routes.transactions import txn_bp [cite: 95]
-    from app.routes.accounts     import acc_bp [cite: 95]
-    from app.routes.reports      import rep_bp [cite: 95]
+     Transaction Processing Endpoint (routes/transactions.py)
 
-    app.register_blueprint(auth_bp, url_prefix='/api/auth') [cite: 95]
-    app.register_blueprint(txn_bp,  url_prefix='/api/transactions') [cite: 95]
-    app.register_blueprint(acc_bp,  url_prefix='/api/accounts') [cite: 95]
-    app.register_blueprint(rep_bp,  url_prefix='/api/reports') [cite: 95]
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from app import db
+from app.models import Account, Transaction
+from app.services.fraud_service import run_fraud_check
+from datetime import datetime
+import uuid
 
-    return app [cite: 95]
+txn_bp = Blueprint('transactions', __name__)
 
+@txn_bp.route('/create', methods=['POST'])
+@jwt_required()
+def create_transaction():
+    data = request.get_json()
+    account_id   = data.get('account_id')
+    txn_type     = data.get('transaction_type')   # CREDIT / DEBIT
+    amount       = float(data.get('amount', 0))
+    channel      = data.get('channel', 'ONLINE')
+    description  = data.get('description', '')
 
-# ==============================================================================
-# 3. TRANSACTION PROCESSING ENDPOINT (routes/transactions.py) [cite: 96, 97]
-# ==============================================================================
-from flask import Blueprint, request, jsonify [cite: 97]
-from flask_jwt_extended import jwt_required, get_jwt_identity [cite: 97]
-from app import db [cite: 97]
-from app.models import Account, Transaction [cite: 97]
-from app.services.fraud_service import run_fraud_check [cite: 97]
-from datetime import datetime [cite: 97]
-import uuid [cite: 97]
+    if amount <= 0:
+        return jsonify({'error': 'Amount must be positive'}), 400
 
-txn_bp = Blueprint('transactions', __name__) [cite: 97]
+    account = Account.query.get_or_404(account_id)
+    if account.status != 'ACTIVE':
+        return jsonify({'error': 'Account is not active'}), 403
 
-@txn_bp.route('/create', methods=['POST']) [cite: 97]
-@jwt_required() [cite: 97]
-def create_transaction(): [cite: 97]
-    data = request.get_json() [cite: 97]
-    account_id   = data.get('account_id') [cite: 97]
-    txn_type     = data.get('transaction_type')   # CREDIT / DEBIT [cite: 97]
-    amount       = float(data.get('amount', 0)) [cite: 97]
-    channel      = data.get('channel', 'ONLINE') [cite: 97]
-    description  = data.get('description', '') [cite: 97]
+    if txn_type == 'DEBIT' and float(account.balance) < amount:
+        return jsonify({'error': 'Insufficient funds'}), 400
 
-    if amount <= 0: [cite: 97]
-        return jsonify({'error': 'Amount must be positive'}), 400 [cite: 97]
+    try:
+        if txn_type == 'CREDIT':
+            account.balance = float(account.balance) + amount
+        else:
+            account.balance = float(account.balance) - amount
 
-    account = Account.query.get_or_404(account_id) [cite: 97]
-    if account.status != 'ACTIVE': [cite: 97]
-        return jsonify({'error': 'Account is not active'}), 403 [cite: 97]
+        txn = Transaction(
+            account_id       = account_id,
+            transaction_type = txn_type,
+            amount           = amount,
+            balance_after    = account.balance,
+            channel          = channel,
+            description      = description,
+            status           = 'SUCCESS',
+            reference_no     = str(uuid.uuid4())[:20],
+            completed_at     = datetime.utcnow()
+        )
+        db.session.add(txn)
+        db.session.commit()
 
-    if txn_type == 'DEBIT' and float(account.balance) < amount: [cite: 97]
-        return jsonify({'error': 'Insufficient funds'}), 400 [cite: 97]
+        # Run fraud detection asynchronously
+        run_fraud_check(txn.transaction_id)
 
-    try: [cite: 97]
-        if txn_type == 'CREDIT': [cite: 97]
-            account.balance = float(account.balance) + amount [cite: 97]
-        else: [cite: 97]
-            account.balance = float(account.balance) - amount [cite: 97]
+        return jsonify({
+            'message'      : 'Transaction successful',
+            'reference_no' : txn.reference_no,
+            'balance_after': float(account.balance)
+        }), 201
 
-        txn = Transaction( [cite: 97]
-            account_id       = account_id, [cite: 97]
-            transaction_type = txn_type, [cite: 97]
-            amount           = amount, [cite: 97]
-            balance_after    = account.balance, [cite: 97]
-            channel          = channel, [cite: 97]
-            description      = description, [cite: 97]
-            status           = 'SUCCESS', [cite: 97]
-            reference_no     = str(uuid.uuid4())[:20], [cite: 97]
-            completed_at     = datetime.utcnow(), [cite: 97]
-        ) [cite: 97]
-        db.session.add(txn) [cite: 97]
-        db.session.commit() [cite: 97]
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+     Fraud Detection Service (services/.  fraud_service.py)
+from app import db
+from app.models import Transaction, Alert
+from datetime import datetime, timedelta
+import statistics
 
-        # Run fraud detection asynchronously [cite: 97]
-        run_fraud_check(txn.transaction_id) [cite: 97]
+LARGE_AMOUNT_THRESHOLD = 100000   # 1 lakh INR
+VELOCITY_LIMIT         = 5        # max transactions per 10 min
+Z_SCORE_THRESHOLD      = 3.0
 
-        return jsonify({ [cite: 97]
-            'message'      : 'Transaction successful', [cite: 97]
-            'reference_no' : txn.reference_no, [cite: 97]
-            'balance_after': float(account.balance) [cite: 97]
-        }), 201 [cite: 97]
+def run_fraud_check(transaction_id):
+    txn = Transaction.query.get(transaction_id)
+    if not txn:
+        return
 
-    except Exception as e: [cite: 97]
-        db.session.rollback() [cite: 97]
-        return jsonify({'error': str(e)}), 500 [cite: 97]
+    alerts = []
 
+    # Rule 1: Large amount check
+    if float(txn.amount) > LARGE_AMOUNT_THRESHOLD:
+        alerts.append(Alert(
+            transaction_id = transaction_id,
+            alert_type     = 'LARGE_AMOUNT',
+            severity       = 'HIGH',
+            description    = f'Transaction of {txn.amount} exceeds threshold'
+        ))
 
-# ==============================================================================
-# 4. FRAUD DETECTION SERVICE (services/fraud_service.py) [cite: 98, 99]
-# ==============================================================================
-from app import db [cite: 99]
-from app.models import Transaction, Alert [cite: 99]
-from datetime import datetime, timedelta [cite: 99]
-import statistics [cite: 99]
+    # Rule 2: Velocity check (> 5 txns in 10 minutes)
+    window_start = txn.initiated_at - timedelta(minutes=10)
+    recent_count = Transaction.query.filter(
+        Transaction.account_id  == txn.account_id,
+        Transaction.initiated_at >= window_start,
+        Transaction.transaction_id != transaction_id
+    ).count()
 
-LARGE_AMOUNT_THRESHOLD = 100000   # 1 lakh INR [cite: 99]
-VELOCITY_LIMIT         = 5        # max transactions per 10 min [cite: 99]
-Z_SCORE_THRESHOLD      = 3.0 [cite: 99]
+    if recent_count >= VELOCITY_LIMIT:
+        alerts.append(Alert(
+            transaction_id = transaction_id,
+            alert_type     = 'HIGH_VELOCITY',
+            severity       = 'MEDIUM',
+            description    = f'{recent_count} transactions in last 10 minutes'
+        ))
 
-def run_fraud_check(transaction_id): [cite: 99]
-    txn = Transaction.query.get(transaction_id) [cite: 99]
-    if not txn: [cite: 99]
-        return [cite: 99]
+    # Rule 3: Z-score anomaly detection
+    recent_txns = Transaction.query.filter(
+        Transaction.account_id == txn.account_id,
+        Transaction.status     == 'SUCCESS'
+    ).order_by(Transaction.initiated_at.desc()).limit(30).all()
 
-    alerts = [] [cite: 99]
+    if len(recent_txns) >= 5:
+        amounts = [float(t.amount) for t in recent_txns]
+        mean    = statistics.mean(amounts)
+        stdev   = statistics.stdev(amounts)
+        if stdev > 0:
+            z = abs((float(txn.amount) - mean) / stdev)
+            if z > Z_SCORE_THRESHOLD:
+                alerts.append(Alert(
+                    transaction_id = transaction_id,
+                    alert_type     = 'STATISTICAL_ANOMALY',
+                    severity       = 'HIGH',
+                    description    = f'Z-score of {z:.2f} detected'
+                ))
 
-    # Rule 1: Large amount check [cite: 99]
-    if float(txn.amount) > LARGE_AMOUNT_THRESHOLD: [cite: 99]
-        alerts.append(Alert( [cite: 99]
-            transaction_id = transaction_id, [cite: 99]
-            alert_type     = 'LARGE_AMOUNT', [cite: 99]
-            severity       = 'HIGH', [cite: 99]
-            description    = f'Transaction of {txn.amount} exceeds threshold', [cite: 99]
-        )) [cite: 99]
+    for alert in alerts:
+        db.session.add(alert)
+    db.session.commit()
 
-    # Rule 2: Velocity check (> 5 txns in 10 minutes) [cite: 99]
-    window_start = txn.initiated_at - timedelta(minutes=10) [cite: 99]
-    recent_count = Transaction.query.filter( [cite: 99]
-        Transaction.account_id  == txn.account_id, [cite: 99]
-        Transaction.initiated_at >= window_start, [cite: 99]
-        Transaction.transaction_id != transaction_id, [cite: 99]
-    ).count() [cite: 99]
+      Report Generation Endpoint (routes/reports.py)
 
-    if recent_count >= VELOCITY_LIMIT: [cite: 99]
-        alerts.append(Alert( [cite: 99]
-            transaction_id = transaction_id, [cite: 99]
-            alert_type     = 'HIGH_VELOCITY', [cite: 99]
-            severity       = 'MEDIUM', [cite: 99]
-            description    = f'{recent_count} transactions in last 10 minutes', [cite: 99]
-        )) [cite: 99]
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required
+from app.models import Transaction
+from sqlalchemy import func
+from datetime import datetime
 
-    # Rule 3: Z-score anomaly detection [cite: 99]
-    recent_txns = Transaction.query.filter( [cite: 99]
-        Transaction.account_id == txn.account_id, [cite: 99]
-        Transaction.status     == 'SUCCESS', [cite: 99]
-    ).order_by(Transaction.initiated_at.desc()).limit(30).all() [cite: 99]
+rep_bp = Blueprint('reports', __name__)
 
-    if len(recent_txns) >= 5: [cite: 99]
-        amounts = [float(t.amount) for t in recent_txns] [cite: 99]
-        mean    = statistics.mean(amounts) [cite: 99]
-        stdev   = statistics.stdev(amounts) [cite: 99]
-        if stdev > 0: [cite: 99]
-            z = abs((float(txn.amount) - mean) / stdev) [cite: 99]
-            if z > Z_SCORE_THRESHOLD: [cite: 99]
-                alerts.append(Alert( [cite: 99]
-                    transaction_id = transaction_id, [cite: 99]
-                    alert_type     = 'STATISTICAL_ANOMALY', [cite: 99]
-                    severity       = 'HIGH', [cite: 99]
-                    description    = f'Z-score of {z:.2f} detected', [cite: 99]
-                )) [cite: 99]
+@rep_bp.route('/summary', methods=['GET'])
+@jwt_required()
+def transaction_summary():
+    account_id = request.args.get('account_id', type=int)
+    start      = request.args.get('start_date')
+    end        = request.args.get('end_date')
 
-    for alert in alerts: [cite: 99]
-        db.session.add(alert) [cite: 99]
-    db.session.commit() [cite: 99]
+    query = Transaction.query.filter(
+        Transaction.account_id == account_id,
+        Transaction.status     == 'SUCCESS'
+    )
 
+    if start:
+        query = query.filter(Transaction.initiated_at >= datetime.fromisoformat(start))
+    if end:
+        query = query.filter(Transaction.initiated_at <= datetime.fromisoformat(end))
 
-# ==============================================================================
-# 5. REPORT GENERATION ENDPOINT (routes/reports.py) [cite: 100, 101]
-# ==============================================================================
-from flask import Blueprint, request, jsonify [cite: 101]
-from flask_jwt_extended import jwt_required [cite: 101]
-from app.models import Transaction [cite: 101]
-from sqlalchemy import func [cite: 101]
-from datetime import datetime [cite: 101]
+    txns         = query.all()
+    total_credit = sum(float(t.amount) for t in txns if t.transaction_type == 'CREDIT')
+    total_debit  = sum(float(t.amount) for t in txns if t.transaction_type == 'DEBIT')
+    txn_count    = len(txns)
+    net_flow     = total_credit - total_debit
+    avg_amount   = (total_credit + total_debit) / txn_count if txn_count else 0
 
-rep_bp = Blueprint('reports', __name__) [cite: 101]
+    channel_summary = {}
+    for t in txns:
+        channel_summary[t.channel] = channel_summary.get(t.channel, 0) + 1
 
-@rep_bp.route('/summary', methods=['GET']) [cite: 101]
-@jwt_required() [cite: 101]
-def transaction_summary(): [cite: 101]
-    account_id = request.args.get('account_id', type=int) [cite: 101]
-    start      = request.args.get('start_date') [cite: 101]
-    end        = request.args.get('end_date') [cite: 101]
+    return jsonify({
+        'account_id'    : account_id,
+        'period'        : { 'start': start, 'end': end },
+        'total_credit'  : round(total_credit, 2),
+        'total_debit'   : round(total_debit, 2),
+        'net_flow'      : round(net_flow, 2),
+        'txn_count'     : txn_count,
+        'avg_amount'    : round(avg_amount, 2),
+        'channel_summary': channel_summary
+    }), 200
 
-    query = Transaction.query.filter( [cite: 101]
-        Transaction.account_id == account_id, [cite: 101]
-        Transaction.status     == 'SUCCESS', [cite: 101]
-    ) [cite: 101]
+                Output
 
-    if start: [cite: 101]
-        query = query.filter(Transaction.initiated_at >= datetime.fromisoformat(start)) [cite: 101]
-    if end: [cite: 101]
-        query = query.filter(Transaction.initiated_at <= datetime.fromisoformat(end)) [cite: 101]
+The following section illustrates sample API responses and system outputs produced during testing.
 
-    txns         = query.all() [cite: 101]
-    total_credit = sum(float(t.amount) for t in txns if t.transaction_type == 'CREDIT') [cite: 101]
-    total_debit  = sum(float(t.amount) for t in txns if t.transaction_type == 'DEBIT') [cite: 101]
-    txn_count    = len(txns) [cite: 101]
-    net_flow     = total_credit - total_debit [cite: 101]
-    avg_amount   = (total_credit + total_debit) / txn_count if txn_count else 0 [cite: 101]
+      Successful Transaction Response
 
-    channel_summary = {} [cite: 101]
-    for t in txns: [cite: 101]
-        channel_summary[t.channel] = channel_summary.get(t.channel, 0) + 1 [cite: 101]
+POST /api/transactions/create
+Authorization: Bearer <JWT_TOKEN>
 
-    return jsonify({ [cite: 101]
-        'account_id'    : account_id, [cite: 101]
-        'period'        : { 'start': start, 'end': end }, [cite: 101]
-        'total_credit'  : round(total_credit, 2), [cite: 101]
-        'total_debit'   : round(total_debit, 2), [cite: 101]
-        'net_flow'      : round(net_flow, 2), [cite: 101]
-        'txn_count'     : txn_count, [cite: 101]
-        'avg_amount'    : round(avg_amount, 2), [cite: 101]
-        'channel_summary': channel_summary [cite: 101]
-    }), 200 [cite: 101]  
+Request Body:
+{
+  "account_id"       : 1042,
+  "transaction_type" : "DEBIT",
+  "amount"           : 25000.00,
+  "channel"          : "ONLINE",
+  "description"      : "Online Shopping - Amazon"
+}
+
+Response (201 Created):
+{
+  "message"       : "Transaction successful",
+  "reference_no"  : "a3f2c891-4e0b-4f5d",
+  "balance_after" : 75432.50
+}
+
+          Fraud Alert Response
+
+Fraud Detection triggered for transaction_id: 8845
+
+Alert Generated:
+{
+  "alert_id"      : 221,
+  "transaction_id": 8845,
+  "alert_type"    : "LARGE_AMOUNT",
+  "severity"      : "HIGH",
+  "description"   : "Transaction of 125000.00 exceeds threshold of 100000",
+  "resolved"      : false,
+  "created_at"    : "2024-11-15T14:32:10"
+}
+
+       Transaction Summary Report Output
+
+GET /api/reports/summary?account_id=1042&start_date=2024-11-01&end_date=2024-11-30
+
+Response (200 OK):
+{
+  "account_id"   : 1042,
+  "period"       : { "start": "2024-11-01", "end": "2024-11-30" },
+  "total_credit" : 150000.00,
+  "total_debit"  : 92450.75,
+  "net_flow"     : 57549.25,
+  "txn_count"    : 38,
+  "avg_amount"   : 6380.29,
+  "channel_summary": {
+    "ONLINE"  : 18,
+    "UPI"     : 12,
+    "ATM"     : 5,
+    "BRANCH"  : 3
+  }
+}
+                Conclusion :
+
+The project demonstrates key software engineering principles including separation of concerns, code modularity, database normalization, RESTful API design, and error handling. It can serve as a foundation for a production-grade banking analytics platform with additional enhancements such as machine learning-based fraud detection, real-time streaming analytics using Apache Kafka, dashboard visualization using React.js, and multi-currency support.
